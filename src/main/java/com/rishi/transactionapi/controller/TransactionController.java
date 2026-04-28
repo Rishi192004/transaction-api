@@ -1,5 +1,6 @@
 package com.rishi.transactionapi.controller;
 
+import com.rishi.transactionapi.config.ratelimiter.RateLimited;
 import com.rishi.transactionapi.dto.TransactionDTO;
 import com.rishi.transactionapi.service.TransactionService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -25,6 +26,7 @@ public class TransactionController {
     private final TransactionService transactionService;
 
     @PostMapping
+    @RateLimited("createTransaction")
     @Operation(summary = "Create a new transaction with idempotency support")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public ResponseEntity<TransactionDTO.Response> createTransaction(
@@ -34,6 +36,7 @@ public class TransactionController {
     }
 
     @GetMapping("/{id}")
+    @RateLimited("getTransaction")
     @Operation(summary = "Get transaction by ID")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public ResponseEntity<TransactionDTO.Response> getTransaction(@PathVariable Long id) {
@@ -41,6 +44,7 @@ public class TransactionController {
     }
 
     @GetMapping("/account/{accountId}")
+    @RateLimited("getByAccount")
     @Operation(summary = "Get paginated transactions for an account")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public ResponseEntity<TransactionDTO.PagedResponse> getByAccount(
@@ -52,6 +56,7 @@ public class TransactionController {
     }
 
     @GetMapping("/account/{accountId}/range")
+    @RateLimited("getByDateRange")
     @Operation(summary = "Get transactions filtered by date range")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
     public ResponseEntity<TransactionDTO.PagedResponse> getByDateRange(
@@ -65,6 +70,7 @@ public class TransactionController {
     }
 
     @PatchMapping("/{id}/reverse")
+    @RateLimited("reverseTransaction")
     @Operation(summary = "Reverse a completed transaction")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<TransactionDTO.Response> reverseTransaction(@PathVariable Long id) {

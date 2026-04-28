@@ -1,10 +1,12 @@
 package com.rishi.transactionapi.service;
 
+import com.rishi.transactionapi.config.redis.CacheService;
 import com.rishi.transactionapi.dto.TransactionDTO;
 import com.rishi.transactionapi.exception.DuplicateTransactionException;
 import com.rishi.transactionapi.exception.TransactionNotFoundException;
 import com.rishi.transactionapi.model.Transaction;
 import com.rishi.transactionapi.repository.TransactionRepository;
+import com.rishi.transactionapi.service.event.TransactionEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -23,6 +25,8 @@ import java.util.UUID;
 public class TransactionService {
 
     private final TransactionRepository transactionRepository;
+    private final CacheService cacheService;
+    private final TransactionEventPublisher eventPublisher;
 
     @Transactional
     public TransactionDTO.Response createTransaction(TransactionDTO.Request request) {
@@ -48,9 +52,21 @@ public class TransactionService {
 
         Transaction saved = transactionRepository.save(transaction);
 
-        // Simulate processing — in real system, publish to SQS/Kafka for async settlement
+        // Publish transaction created event to Kafka (async settlement)
+        eventPublisher.publishTransactionCreated(saved);
+
+        // Update transaction status to COMPLETED
         saved.setStatus(Transaction.TransactionStatus.COMPLETED);
         saved = transactionRepository.save(saved);
+
+        // Publish updated event
+        eventPublisher.publishTransactionUpdated(saved);
+
+        // Publish settlement event for async processing
+        eventPublisher.publishSettlementEvent(saved);
+
+        // Invalidate cache for account
+        cacheService.invalidateRecentTransactions(request.getAccountId());
 
         log.info("Transaction created: id={}, account={}, type={}, amount={}",
                 saved.getId(), saved.getAccountId(), saved.getType(), saved.getAmount());
@@ -69,13 +85,35 @@ public class TransactionService {
     public TransactionDTO.PagedResponse getTransactionsByAccount(
             String accountId, int page, int size) {
 
+        // Try to get from cache first
+        if (page == 0 && size == 20) { // Cache only default pagination
+            var cachedTransactions = cacheService.getRecentTransactions(accountId);
+            if (cachedTransactions.isPresent()) {
+                var transactions = cachedTransactions.get();
+                return TransactionDTO.PagedResponse.builder()
+                        .transactions(transactions)
+                        .page(0)
+                        .size(size)
+                        .totalElements(transactions.size())
+                        .totalPages(1)
+                        .build();
+            }
+        }
+
         Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
         Page<Transaction> result = transactionRepository.findByAccountId(accountId, pageable);
 
+        var responseTransactions = result.getContent().stream()
+                .map(TransactionDTO.Response::from)
+                .toList();
+
+        // Cache the result if it's the first page
+        if (page == 0 && size == 20) {
+            cacheService.cacheRecentTransactions(accountId, responseTransactions);
+        }
+
         return TransactionDTO.PagedResponse.builder()
-                .transactions(result.getContent().stream()
-                        .map(TransactionDTO.Response::from)
-                        .toList())
+                .transactions(responseTransactions)
                 .page(result.getNumber())
                 .size(result.getSize())
                 .totalElements(result.getTotalElements())
@@ -114,6 +152,12 @@ public class TransactionService {
 
         transaction.setStatus(Transaction.TransactionStatus.REVERSED);
         Transaction reversed = transactionRepository.save(transaction);
+
+        // Publish reversal event
+        eventPublisher.publishTransactionUpdated(reversed);
+
+        // Invalidate cache
+        cacheService.invalidateAccountCache(transaction.getAccountId());
 
         log.info("Transaction reversed: id={}", reversed.getId());
         return TransactionDTO.Response.from(reversed);
